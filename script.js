@@ -19,6 +19,8 @@ document.getElementById('drop-zone').addEventListener('drop', (e) => {
 });
 
 function handleCSV(file) {
+  document.getElementById('instructions').style.display = 'none';
+
   Papa.parse(file, {
     header: false,
     skipEmptyLines: true,
