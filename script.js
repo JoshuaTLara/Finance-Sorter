@@ -1,3 +1,74 @@
+
+// ==== CSV ADAPTER HELPERS ====
+function normalizeAmount(raw) {
+  if (raw == null) return 0;
+  let s = String(raw).trim();
+  const parenNeg = /^\(.*\)$/.test(s);
+  s = s.replace(/[,$]/g, '').replace(/[()]/g, '');
+  const n = parseFloat(s || '0');
+  if (Number.isNaN(n)) return 0;
+  return parenNeg ? -Math.abs(n) : n;
+}
+
+function normalizeDate(raw) {
+  if (!raw) return '';
+  const s = String(raw).trim();
+  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;      // ISO already
+  const m = /^(\d{1,2})\/(\d{1,2})\/(\d{4})$/.exec(s); // MM/DD/YYYY
+  if (m) {
+    const mm = m[1].padStart(2, '0');
+    const dd = m[2].padStart(2, '0');
+    const yyyy = m[3];
+    return `${yyyy}-${mm}-${dd}`;
+  }
+  return s;
+}
+
+function cleanDesc(desc) {
+  return String(desc || '')
+    .replace(/PURCHASE AUTHORIZED ON \d{2}\/\d{2}/i, '')
+    .replace(/CARD \d+/i, '')
+    .replace(/\s{2,}/g, ' ')
+    .trim()
+    .toUpperCase();
+}
+
+/**
+ * Detects which CSV shape we have by inspecting the first row (no headers mode).
+ * Returns one of: 'YourBank_NoHeader_5Cols', 'USBank_WithHeaders', 'USBank_NoHeaderBody'
+ */
+function detectProfile(firstRow) {
+  // firstRow is an array of cells
+  if (!firstRow || firstRow.length < 3) return 'Unknown';
+
+  const c0 = String(firstRow[0] || '').replace(/"/g,'').trim();
+  const c1 = String(firstRow[1] || '').replace(/"/g,'').trim();
+  const c2 = String(firstRow[2] || '').replace(/"/g,'').trim();
+  const c3 = String(firstRow[3] || '').replace(/"/g,'').trim();
+  const c4 = String(firstRow[4] || '').replace(/"/g,'').trim();
+
+  // Exact header row for US Bank
+  if (c0.toLowerCase() === 'date' && c1.toLowerCase() === 'transaction' &&
+      c2.toLowerCase() === 'name' && c3.toLowerCase() === 'memo' &&
+      c4.toLowerCase() === 'amount') {
+    return 'USBank_WithHeaders';
+  }
+
+  // Your bank body row: MM/DD/YYYY, <amount>, *, <empty>, <desc>
+  const looksMDY = /^\d{1,2}\/\d{1,2}\/\d{4}$/.test(c0);
+  if (looksMDY && c2 === '*') {
+    return 'YourBank_NoHeader_5Cols';
+  }
+
+  // US Bank body without header: first col looks ISO date and 5+ columns
+  const looksISO = /^\d{4}-\d{2}-\d{2}$/.test(c0);
+  if (looksISO && firstRow.length >= 5) {
+    return 'USBank_NoHeaderBody';
+  }
+
+  return 'Unknown';
+}
+
 document.getElementById('drop-zone').addEventListener('click', () => {
   document.getElementById('file-input').click();
 });
@@ -18,24 +89,73 @@ document.getElementById('drop-zone').addEventListener('drop', (e) => {
   if (file) handleCSV(file);
 });
 
+
 function handleCSV(file) {
   document.getElementById('instructions').style.display = 'none';
 
+  // First, parse a peek at the first row (no headers) to detect profile
   Papa.parse(file, {
     header: false,
-    skipEmptyLines: true,
-    complete: function(results) {
-      const raw = results.data.map(row => ({
-        Date: row[0],
-        Amount: row[1],
-        Star: row[2],
-        Unused: row[3],
-        Description: row[4]
-      }));
+    preview: 1,
+    complete: function(previewRes) {
+      const firstRow = (previewRes && previewRes.data && previewRes.data[0]) || null;
+      const profile = detectProfile(firstRow);
+      console.log('Detected CSV profile:', profile);
 
-      localStorage.setItem('last-transactions', JSON.stringify(raw));
-      const categorized = categorizeTransactions(raw);
-      displayResults(categorized);
+      // Parse full file (no headers) to keep things consistent
+      Papa.parse(file, {
+        header: false,
+        skipEmptyLines: true,
+        complete: function(fullRes) {
+          let rows = fullRes.data || [];
+          if (!rows.length) {
+            alert('No rows found in CSV.');
+            return;
+          }
+
+          // If the file had a US Bank header, drop it
+          if (profile === 'USBank_WithHeaders') {
+            rows = rows.slice(1);
+          }
+
+          // Map rows to canonical shape
+          const mapped = rows.map(r => {
+            // Ensure we have at least 5 cells
+            const c0 = r[0], c1 = r[1], c2 = r[2], c3 = r[3], c4 = r[4];
+
+            if (profile === 'YourBank_NoHeader_5Cols') {
+              return {
+                Date: normalizeDate(c0),
+                Amount: normalizeAmount(c1),
+                Description: cleanDesc(c4)
+              };
+            }
+
+            // Both US Bank shapes (header or no header) share same column order: Date, Transaction, Name, Memo, Amount
+            if (profile === 'USBank_WithHeaders' || profile === 'USBank_NoHeaderBody') {
+              const name = c2 || '';
+              const memo = c3 || '';
+              return {
+                Date: normalizeDate(c0),
+                Amount: normalizeAmount(c4),
+                Description: cleanDesc((name + ' ' + memo).trim())
+              };
+            }
+
+            // Unknown: best-effort guess
+            return {
+              Date: normalizeDate(c0),
+              Amount: normalizeAmount(c1),
+              Description: cleanDesc((c2 || '') + ' ' + (c3 || '') + ' ' + (c4 || ''))
+            };
+          });
+
+          // Persist, categorize, display
+          localStorage.setItem('last-transactions', JSON.stringify(mapped));
+          const categorized = categorizeTransactions(mapped);
+          displayResults(categorized);
+        }
+      });
     }
   });
 }
