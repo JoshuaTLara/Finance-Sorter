@@ -1,3 +1,4 @@
+let CURRENT_ROWS = [];
 
 // ==== CSV ADAPTER HELPERS ====
 function normalizeAmount(raw) {
@@ -67,6 +68,75 @@ function detectProfile(firstRow) {
   }
 
   return 'Unknown';
+}
+// ==== RULE / KEYWORD HELPERS ====
+
+// words that are common prefixes/noise in bank exports
+const RULE_STOPWORDS = new Set([
+  'WEB', 'PAYMENT', 'POS', 'DEBIT', 'CREDIT', 'ACH', 'CARD', 'PURCHASE',
+  'AUTHORIZED', 'ON', 'THE', 'AND', 'ONLINE', 'TRANSFER', 'FROM', 'TO',
+  'CHECK', 'CHECKCARD', 'WITHDRAWAL', 'WITHDRAW', 'ATM', 'DEPOSIT',
+  'FEE', 'AUTOPAY', 'AUTO', 'BILL', 'PMT', 'PAY', 'MOBILE'
+]);
+
+function tokenizeDesc(desc) {
+  return String(desc || '')
+    .toUpperCase()
+    .replace(/[^A-Z0-9 ]/g, ' ')
+    .replace(/\s{2,}/g, ' ')
+    .trim()
+    .split(' ')
+    .filter(Boolean);
+}
+
+function extractMerchantCandidates(desc) {
+  const tokens = tokenizeDesc(desc);
+
+  // Remove pure numbers and stopwords
+  const filtered = tokens.filter(t =>
+    t.length >= 3 &&
+    !/^\d+$/.test(t) &&
+    !RULE_STOPWORDS.has(t)
+  );
+
+  // Return unique tokens in order
+  return Array.from(new Set(filtered));
+}
+
+function buildMatchRegex(keyword) {
+  const kw = String(keyword || '').trim().toUpperCase();
+  if (!kw) return null;
+
+  // Escape regex special chars just in case
+  const escaped = kw.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp(`\\b${escaped}\\b`, 'i');
+}
+
+function countMatchesInData(allRows, keyword) {
+  const rx = buildMatchRegex(keyword);
+  if (!rx) return 0;
+
+  let count = 0;
+  for (const row of allRows) {
+    const desc = String(row.Description || '').toUpperCase();
+    if (rx.test(desc)) count++;
+  }
+  return count;
+}
+
+function getTopKeywordSuggestions(selectedDescs, max = 8) {
+  const counts = {};
+  for (const d of selectedDescs) {
+    const cands = extractMerchantCandidates(d);
+    for (const token of cands) {
+      counts[token] = (counts[token] || 0) + 1;
+    }
+  }
+
+  return Object.entries(counts)
+    .sort((a, b) => b[1] - a[1]) // freq desc
+    .map(([token]) => token)
+    .slice(0, max);
 }
 
 document.getElementById('drop-zone').addEventListener('click', () => {
@@ -149,9 +219,9 @@ function handleCSV(file) {
               Description: cleanDesc((c2 || '') + ' ' + (c3 || '') + ' ' + (c4 || ''))
             };
           });
-
           // Persist, categorize, display
           localStorage.setItem('last-transactions', JSON.stringify(mapped));
+          CURRENT_ROWS = mapped;
           const categorized = categorizeTransactions(mapped);
           displayResults(categorized);
         }
@@ -260,79 +330,255 @@ function displayResults(categorized) {
   dropdown.addEventListener('change', () => {
     input.style.display = dropdown.value === 'New Category...' ? 'inline-block' : 'none';
   });
+    // --- Apply-to-all matching controls ---
+  const applyAllWrap = document.createElement('div');
+  applyAllWrap.style.margin = '0.75rem 0';
+  applyAllWrap.style.padding = '0.75rem';
+  applyAllWrap.style.border = '1px solid #ddd';
+  applyAllWrap.style.background = '#fafafa';
+
+  const applyAllLabel = document.createElement('label');
+  applyAllLabel.style.display = 'flex';
+  applyAllLabel.style.gap = '0.5rem';
+  applyAllLabel.style.alignItems = 'center';
+
+  const applyAllCheckbox = document.createElement('input');
+  applyAllCheckbox.type = 'checkbox';
+
+  const applyAllText = document.createElement('span');
+  applyAllText.textContent = 'Apply this category to ALL transactions matching a keyword in this file';
+
+  applyAllLabel.appendChild(applyAllCheckbox);
+  applyAllLabel.appendChild(applyAllText);
+  applyAllWrap.appendChild(applyAllLabel);
+
+  const matchRow = document.createElement('div');
+  matchRow.style.display = 'flex';
+  matchRow.style.gap = '0.5rem';
+  matchRow.style.alignItems = 'center';
+  matchRow.style.marginTop = '0.5rem';
+
+  const matchSelect = document.createElement('select');
+  matchSelect.disabled = true;
+
+  const matchInput = document.createElement('input');
+  matchInput.placeholder = 'Or type a keyword (e.g., AMAZON)';
+  matchInput.disabled = true;
+
+  const matchPreview = document.createElement('div');
+  matchPreview.style.marginTop = '0.5rem';
+  matchPreview.style.fontSize = '0.9rem';
+  matchPreview.style.color = '#444';
+  matchPreview.textContent = '';
+
+  matchRow.appendChild(matchSelect);
+  matchRow.appendChild(matchInput);
+  applyAllWrap.appendChild(matchRow);
+  applyAllWrap.appendChild(matchPreview);
+
+  reassignDiv.appendChild(applyAllWrap);
+
+    function updateMatchPreview() {
+    const kw = (matchInput.value || matchSelect.value || '').trim().toUpperCase();
+    if (!applyAllCheckbox.checked || !kw) {
+      matchPreview.textContent = '';
+      return;
+    }
+    const total = (CURRENT_ROWS || []).length;
+    const hitCount = countMatchesInData(CURRENT_ROWS || [], kw);
+    matchPreview.textContent = `Rule preview: "${kw}" will match ${hitCount} of ${total} transactions in this file.`;
+  }
+
+  applyAllCheckbox.addEventListener('change', () => {
+    const enabled = applyAllCheckbox.checked;
+    matchSelect.disabled = !enabled;
+    matchInput.disabled = !enabled;
+
+    if (!enabled) {
+      matchPreview.textContent = '';
+      return;
+    }
+
+    // Populate suggestions based on current checked rows (if any)
+    const selected = Array.from(document.querySelectorAll('input.txn-select:checked'));
+    const selectedDescs = selected.map(x => x.dataset.desc || '').filter(Boolean);
+
+    const suggestions = getTopKeywordSuggestions(selectedDescs, 10);
+    matchSelect.innerHTML = '';
+
+    const placeholder = document.createElement('option');
+    placeholder.value = '';
+    placeholder.textContent = 'Pick a suggested keyword...';
+    matchSelect.appendChild(placeholder);
+
+    suggestions.forEach(s => {
+      const opt = document.createElement('option');
+      opt.value = s;
+      opt.textContent = s;
+      matchSelect.appendChild(opt);
+    });
+
+    updateMatchPreview();
+  });
+
+  matchSelect.addEventListener('change', () => {
+    // If user picks a suggestion, mirror it into input so they can edit it
+    if (matchSelect.value) matchInput.value = matchSelect.value;
+    updateMatchPreview();
+  });
+
+  matchInput.addEventListener('input', updateMatchPreview);
 
   const assignBtn = document.createElement('button');
   assignBtn.textContent = 'Assign Selected';
-assignBtn.onclick = () => {
-  const selectedRows = document.querySelectorAll('input.txn-select:checked');
-  if (!selectedRows.length) return alert("Please select at least one transaction.");
+  assignBtn.onclick = () => {
+    const selectedRows = document.querySelectorAll('input.txn-select:checked');
+    if (!selectedRows.length) return alert("Please select at least one transaction.");
 
-  let chosenCategory = dropdown.value;
-  const isNew = dropdown.value === 'New Category...';
+    let chosenCategory = dropdown.value;
+    const isNew = dropdown.value === 'New Category...';
 
-  if (isNew) {
-    const newCatName = input.value.trim();
-    if (!newCatName) return alert("Please enter a new category name.");
-    chosenCategory = newCatName;
-  }
-
-  // 🔍 Suggest descriptive phrases
-  const phraseCounts = {};
-  selectedRows.forEach(input => {
-    const desc = input.dataset.desc;
-    // Use first 2-3 words from description
-    const phrase = desc.split(' ').slice(0, 3).join(' ');
-    if (phrase.length >= 4 && !/^\d+$/.test(phrase)) {
-      phraseCounts[phrase] = (phraseCounts[phrase] || 0) + 1;
+    if (isNew) {
+      const newCatName = input.value.trim();
+      if (!newCatName) return alert("Please enter a new category name.");
+      chosenCategory = newCatName;
     }
-  });
 
-  const topPhrases = Object.entries(phraseCounts)
-    .sort((a, b) => b[1] - a[1])
-    .map(entry => entry[0])
-    .slice(0, 5);
+    // Gather selected descriptions
+    const selectedDescs = Array.from(selectedRows).map(x => x.dataset.desc || '').filter(Boolean);
 
-  const defaultSuggestion = topPhrases.join(', ');
-  const rawInput = prompt(
-    `Enter one or more keywords (comma separated) to associate with "${chosenCategory}":\nSuggested: ${defaultSuggestion}`,
-    topPhrases[0] || ''
-  );
+    // Build smarter suggestions (merchant-like tokens)
+    const topTokens = getTopKeywordSuggestions(selectedDescs, 8);
 
-  if (!rawInput) return alert("You must enter at least one keyword.");
+    // Default suggestion: first token if available, otherwise fallback to old "first 2-3 words"
+    const fallbackPhraseCounts = {};
+    selectedDescs.forEach(desc => {
+      const phrase = desc.split(' ').slice(0, 3).join(' ');
+      if (phrase.length >= 4 && !/^\d+$/.test(phrase)) {
+        fallbackPhraseCounts[phrase] = (fallbackPhraseCounts[phrase] || 0) + 1;
+      }
+    });
+    const fallbackTop = Object.entries(fallbackPhraseCounts)
+      .sort((a, b) => b[1] - a[1])
+      .map(([p]) => p)
+      .slice(0, 3);
 
-  const keywords = rawInput
-    .split(',')
-    .map(k => k.trim().toUpperCase())
-    .filter(k => k.length >= 3 && !/^\d+$/.test(k));
+    const suggested = topTokens.length ? topTokens.join(', ') : fallbackTop.join(', ');
+    const defaultKw = topTokens[0] || fallbackTop[0] || '';
 
-  const custom = getCustomCategories();
-  keywords.forEach(keyword => {
-    custom[keyword] = chosenCategory;
-  });
-  saveCustomCategories(custom);
-  populateDropdown();
+    // Determine if we are applying to all matching
+    const wantsApplyAll = !!applyAllCheckbox.checked;
+    let keywordForRule = '';
 
-  // Move selected transactions
-  selectedRows.forEach(input => {
-    const desc = input.dataset.desc;
-    const date = input.dataset.date;
-    const amt = parseFloat(input.dataset.amt);
-    if (!categorized[chosenCategory]) categorized[chosenCategory] = [];
-    categorized[chosenCategory].push({ Date: date, Amount: amt, Description: desc });
-  });
+    if (wantsApplyAll) {
+      keywordForRule = (matchInput.value || matchSelect.value || '').trim().toUpperCase();
+      if (!keywordForRule) {
+        return alert("If 'Apply to ALL matching' is checked, please choose or type a keyword.");
+      }
+    } else {
+      // Original prompt flow, but with better suggestions
+      const rawInput = prompt(
+        `Enter one or more keywords (comma separated) to associate with "${chosenCategory}":\nSuggested: ${suggested}`,
+        defaultKw
+      );
 
-  // Remove from old category
-  for (const category in categorized) {
-    if (category === chosenCategory) continue;
-    categorized[category] = categorized[category].filter(txn =>
-      !Array.from(selectedRows).some(input =>
-        input.dataset.desc === txn.Description && input.dataset.date === txn.Date
-      )
-    );
+      if (!rawInput) return alert("You must enter at least one keyword.");
+
+      const keywords = rawInput
+        .split(',')
+        .map(k => k.trim().toUpperCase())
+        .filter(k => k.length >= 3 && !/^\d+$/.test(k));
+
+      if (!keywords.length) return alert("You must enter at least one valid keyword (>= 3 chars).");
+
+      // Save keyword rules
+      const custom = getCustomCategories();
+      keywords.forEach(keyword => {
+        custom[keyword] = chosenCategory;
+      });
+      saveCustomCategories(custom);
+      populateDropdown();
+
+      // Move only the selected transactions (existing behavior)
+      selectedRows.forEach(input => {
+        const desc = input.dataset.desc;
+        const date = input.dataset.date;
+        const amt = parseFloat(input.dataset.amt);
+        if (!categorized[chosenCategory]) categorized[chosenCategory] = [];
+        categorized[chosenCategory].push({ Date: date, Amount: amt, Description: desc });
+      });
+
+      // Remove from old category
+      for (const category in categorized) {
+        if (category === chosenCategory) continue;
+        categorized[category] = categorized[category].filter(txn =>
+          !Array.from(selectedRows).some(input =>
+            input.dataset.desc === txn.Description && input.dataset.date === txn.Date
+          )
+        );
+      }
+
+      return displayResults(categorized);
+    }
+
+    // ---- APPLY-ALL-MATCHING PATH (structured rule) ----
+
+    // Preview + guardrail for generic rules
+    const total = (CURRENT_ROWS || []).length;
+    const hitCount = countMatchesInData(CURRENT_ROWS || [], keywordForRule);
+
+    // Warn if very broad, or if keyword looks like a known-generic stopword
+    const isStopword = RULE_STOPWORDS.has(keywordForRule);
+    const tooBroad = total > 0 && (hitCount / total) > 0.30; // >30% of file
+
+    if (isStopword || tooBroad) {
+      const msg = [
+        `Warning: "${keywordForRule}" looks broad.`,
+        `It will match ${hitCount} of ${total} transactions in this file.`,
+        `This can cause future runs to move unrelated transactions into "${chosenCategory}".`,
+        '',
+        'Continue anyway?'
+      ].join('\n');
+      const ok = confirm(msg);
+      if (!ok) return;
+    }
+
+    // Save the single rule keyword -> category
+    const custom = getCustomCategories();
+    custom[keywordForRule] = chosenCategory;
+    saveCustomCategories(custom);
+    populateDropdown();
+
+    // Apply category to ALL matching transactions in this file:
+    // We'll rebuild categorization from CURRENT_ROWS so everything is consistent.
+    // (This prevents partial/inconsistent "moving" between buckets.)
+    const rebuilt = categorizeTransactions(CURRENT_ROWS || []);
+
+// Always create the category so it displays even if it ends up empty
+if (!rebuilt[chosenCategory]) rebuilt[chosenCategory] = [];
+
+// Force-match: anything that matches the keyword gets placed in chosenCategory
+const rx = buildMatchRegex(keywordForRule);
+if (rx) {
+  // Pull matching txns from all categories and push into chosenCategory
+  for (const cat of Object.keys(rebuilt)) {
+    if (cat === chosenCategory) continue;
+    const keep = [];
+    for (const txn of rebuilt[cat]) {
+      if (rx.test(String(txn.Description || '').toUpperCase())) {
+        rebuilt[chosenCategory].push(txn);
+      } else {
+        keep.push(txn);
+      }
+    }
+    rebuilt[cat] = keep;
   }
+}
 
-  displayResults(categorized);
-};
+
+    displayResults(rebuilt);
+  };
+
 
 
 
@@ -368,6 +614,30 @@ assignBtn.onclick = () => {
       checkbox.dataset.date = txn.Date;
       checkbox.dataset.amt = txn.Amount;
       cell.appendChild(checkbox);
+
+      checkbox.addEventListener('change', () => {
+  if (applyAllCheckbox.checked) {
+    // re-run the same suggestion population logic you used in applyAllCheckbox change handler
+    const selected = Array.from(document.querySelectorAll('input.txn-select:checked'));
+    const selectedDescs = selected.map(x => x.dataset.desc || '').filter(Boolean);
+    const suggestions = getTopKeywordSuggestions(selectedDescs, 10);
+
+    matchSelect.innerHTML = '';
+    const placeholder = document.createElement('option');
+    placeholder.value = '';
+    placeholder.textContent = 'Pick a suggested keyword...';
+    matchSelect.appendChild(placeholder);
+
+    suggestions.forEach(s => {
+      const opt = document.createElement('option');
+      opt.value = s;
+      opt.textContent = s;
+      matchSelect.appendChild(opt);
+    });
+
+    updateMatchPreview();
+  }
+});
 
       total += txn.Amount;
       if (txn.Amount > 0) summary.income += txn.Amount;
