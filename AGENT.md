@@ -7,8 +7,9 @@ This file is for AI coding agents and human contributors working in this reposit
 Before making changes, read:
 
 1. `docs/README.md`
-2. `docs/AI/SESSION_CONTEXT.md`
-3. The files you plan to edit
+2. `docs/PROJECT_PURPOSE.md`
+3. `docs/AI/SESSION_CONTEXT.md`
+4. The files you plan to edit
 
 This repo is intentionally small. Favor direct, readable changes over new framework, build, or tooling layers unless the user asks for them.
 
@@ -19,6 +20,7 @@ Finance Sorter is a static browser app for sorting bank CSV transactions.
 - `index.html` is the browser entry point.
 - `categories.js` defines default category keyword rules.
 - `script.js` handles parsing, normalization, categorization, reassignment, and rendering.
+- `docs/PROJECT_PURPOSE.md` explains why the app exists and what values to preserve.
 - `docs/CSV_FORMATS.md` documents supported bank CSV layouts.
 - `docs/AI/SESSION_CONTEXT.md` should be updated when project context changes.
 
@@ -26,6 +28,7 @@ Finance Sorter is a static browser app for sorting bank CSV transactions.
 
 - Keep the app runnable as static files.
 - Avoid committing private financial data or real bank exports.
+- Preserve the privacy-first design. Do not add data collection casually.
 - Keep category keywords uppercase for consistency.
 - Preserve browser-only behavior unless a task explicitly changes that direction.
 - Use small helper functions when they make parsing or matching behavior easier to test.

@@ -17,6 +17,7 @@ The app currently has no build step and no backend. It runs from static files:
 - `docs/AI/README.md`: How the AI handoff docs are meant to be used.
 - `docs/AI/SESSION_CONTEXT.md`: Current repo context for future AI sessions.
 - `docs/CSV_FORMATS.md`: Supported bank CSV layouts and parser mappings.
+- `docs/PROJECT_PURPOSE.md`: Why the app exists and what future changes should protect.
 - `AGENT.md`: Operating guide for coding agents working in this repository.
 
 ## Run Locally
