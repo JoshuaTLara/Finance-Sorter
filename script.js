@@ -35,8 +35,8 @@ function cleanDesc(desc) {
 }
 
 /**
- * Detects which CSV shape we have by inspecting the first row (no headers mode).
- * Returns one of: 'YourBank_NoHeader_5Cols', 'USBank_WithHeaders', 'USBank_NoHeaderBody'
+ * Detects which CSV shape we have by inspecting the first row.
+ * Returns one of: 'YourBank_NoHeader_5Cols', 'WellsFargo_WithHeaders', 'USBank_WithHeaders', 'USBank_NoHeaderBody'
  */
 function detectProfile(firstRow) {
   // firstRow is an array of cells
@@ -55,7 +55,14 @@ function detectProfile(firstRow) {
     return 'USBank_WithHeaders';
   }
 
-  // Your bank body row: MM/DD/YYYY, <amount>, *, <empty>, <desc>
+  // Current Wells Fargo checking export: DATE, DESCRIPTION, AMOUNT, CHECK #, STATUS
+  if (c0.toLowerCase() === 'date' && c1.toLowerCase() === 'description' &&
+      c2.toLowerCase() === 'amount' && c3.toLowerCase().replace(/\s/g, '') === 'check#' &&
+      c4.toLowerCase() === 'status') {
+    return 'WellsFargo_WithHeaders';
+  }
+
+  // Legacy Wells Fargo body row: MM/DD/YYYY, <amount>, *, <empty>, <desc>
   const looksMDY = /^\d{1,2}\/\d{1,2}\/\d{4}$/.test(c0);
   if (looksMDY && c2 === '*') {
     return 'YourBank_NoHeader_5Cols';
@@ -183,8 +190,8 @@ function handleCSV(file) {
             return;
           }
 
-          // If the file had a US Bank header, drop it
-          if (profile === 'USBank_WithHeaders') {
+          // Drop known header rows after profile detection
+          if (profile === 'USBank_WithHeaders' || profile === 'WellsFargo_WithHeaders') {
             rows = rows.slice(1);
           }
 
@@ -198,6 +205,14 @@ function handleCSV(file) {
                 Date: normalizeDate(c0),
                 Amount: normalizeAmount(c1),
                 Description: cleanDesc(c4)
+              };
+            }
+
+            if (profile === 'WellsFargo_WithHeaders') {
+              return {
+                Date: normalizeDate(c0),
+                Amount: normalizeAmount(c2),
+                Description: cleanDesc(c1)
               };
             }
 

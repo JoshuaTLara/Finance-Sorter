@@ -1,0 +1,18 @@
+# Private financial exports
+*.csv
+*.xls
+*.xlsx
+*.qfx
+*.ofx
+*.pdf
+
+# Intentional fake samples are allowed
+!docs/samples/
+!docs/samples/*.csv
+
+# Local machine noise
+.env
+*.log
+.DS_Store
+Thumbs.db
+
